@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <style>
+      .dark { fill: #0F4454; stroke: #0F4454; }
+      .mint { fill: #64C6A8; stroke: #64C6A8; }
+      .none { fill: none; }
+    </style>
+  </defs>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="17.5" cy="17" rx="9" ry="2.8" class="none mint" stroke-width="2.4"/>
+    <ellipse cx="46.5" cy="17" rx="9" ry="2.8" class="none mint" stroke-width="2.4"/>
+    <path d="M14.8 18.8C14.8 18.2 15.3 17.7 15.9 17.7H19.1C19.7 17.7 20.2 18.2 20.2 18.8V24.7C20.2 27.1 18.7 29.1 17.5 29.1C16.3 29.1 14.8 27.1 14.8 24.7V18.8Z" class="dark"/>
+    <path d="M43.8 18.8C43.8 18.2 44.3 17.7 44.9 17.7H48.1C48.7 17.7 49.2 18.2 49.2 18.8V24.7C49.2 27.1 47.7 29.1 46.5 29.1C45.3 29.1 43.8 27.1 43.8 24.7V18.8Z" class="dark"/>
+    <path d="M17.5 23.2L29.4 26.2" class="none dark" stroke-width="3.8"/>
+    <path d="M46.5 23.2L34.6 26.2" class="none dark" stroke-width="3.8"/>
+    <circle cx="32" cy="29" r="6.2" class="none dark" stroke-width="3.8"/>
+    <circle cx="32" cy="29" r="2.4" class="none dark" stroke-width="2.2"/>
+    <circle cx="34.7" cy="26.4" r="1.1" class="mint"/>
+    <path d="M22.7 31.8V41.4L32 47.1L41.3 41.4V31.8" class="none dark" stroke-width="4.2"/>
+    <path d="M22.7 31.8L32 36.8L41.3 31.8" class="none dark" stroke-width="4.2"/>
+    <path d="M26.6 52.2H37.4" class="none mint" stroke-width="2.4"/>
+    <path d="M25.1 55.6H38.9" class="none mint" stroke-width="2.4"/>
+    <path d="M27.6 59H36.4" class="none mint" stroke-width="2.4"/>
+  </g>
+</svg>
