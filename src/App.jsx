@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertTriangle,
   ArrowLeft,
+  Bell,
   Building2,
   CalendarDays,
   CheckCircle2,
@@ -16,6 +17,7 @@ import {
   Loader2,
   LogOut,
   MapPin,
+  Menu,
   Play,
   Radio,
   RefreshCw,
@@ -43,6 +45,11 @@ import {
 
 const ASSETS = {
   logo: "/assets/structrepair-logo.png",
+  aiAssessment: "/assets/ai-assessment.png",
+  closeup: "/assets/drone-closeup.png",
+  damageScan: "/assets/damage-detection-scan.png",
+  droneScan: "/assets/drone-building-scan.png",
+  elements: "/assets/structural-elements.png",
   exterior: "/assets/building-drone-exterior.png",
   live: "/assets/live-inspection-room.png",
   reportAnalytics: "/assets/report-analytics-hero.png",
@@ -299,8 +306,11 @@ function PageHeader({ title, subtitle, actions }) {
 }
 
 function AppShell({ activeView, user, onNavigate, onLogout, children }) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const activeItem = navItems.find((item) => item.id === activeView) || navItems[0];
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand-box">
           <img src={ASSETS.logo} alt="StructRepair Drone" />
@@ -332,7 +342,31 @@ function AppShell({ activeView, user, onNavigate, onLogout, children }) {
           </button>
         </div>
       </aside>
-      <main className="page">{children}</main>
+      <main className="page">
+        <header className="topbar">
+          <div className="topbar-left">
+            <button
+              className="icon-button sidebar-toggle"
+              type="button"
+              onClick={() => setIsCollapsed((value) => !value)}
+              aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <Menu size={20} />
+            </button>
+            <div>
+              <span className="breadcrumb">StructRepair / {activeItem.label}</span>
+              <strong>{activeItem.label}</strong>
+            </div>
+          </div>
+          <div className="topbar-right">
+            <button className="icon-button light" type="button" aria-label="Notifications">
+              <Bell size={19} />
+            </button>
+            <div className="topbar-avatar">{user?.name?.slice(0, 2).toUpperCase() || "EN"}</div>
+          </div>
+        </header>
+        <div className="page-content">{children}</div>
+      </main>
     </div>
   );
 }
@@ -356,6 +390,11 @@ function LoginPage({ onLogin, error, isLoading }) {
         <img className="login-logo" src={ASSETS.logo} alt="StructRepair Drone" />
         <div className="login-image">
           <img src={ASSETS.reportAnalytics} alt="Structural report analytics" />
+        </div>
+        <div className="login-gallery" aria-hidden="true">
+          <img src={ASSETS.droneScan} alt="" />
+          <img src={ASSETS.damageScan} alt="" />
+          <img src={ASSETS.aiAssessment} alt="" />
         </div>
       </section>
       <section className="login-panel">
