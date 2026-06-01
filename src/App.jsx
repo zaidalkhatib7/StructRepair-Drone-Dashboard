@@ -545,6 +545,15 @@ function LoginPage({ onLogin, error, isLoading }) {
     <main className="login-page">
       <section className="login-visual" aria-label="StructRepair Drone">
         <img className="login-logo" src={ASSETS.logo} alt="StructRepair Drone" />
+        <div className="login-copy">
+          <h1>StructRepair</h1>
+          <p>AI-Powered Structural Damage Assessment</p>
+          <ul>
+            <li>Drone-based building inspection</li>
+            <li>Real-time AI damage detection</li>
+            <li>Automated structural analysis reports</li>
+          </ul>
+        </div>
         <div className="login-image">
           <img src={ASSETS.reportAnalytics} alt="Structural report analytics" />
         </div>
@@ -563,8 +572,8 @@ function LoginPage({ onLogin, error, isLoading }) {
           }}
         >
           <div>
-            <h1>Engineer Sign In</h1>
-            <p>Connect to the local Laravel inspection gateway.</p>
+            <h1>Welcome Back</h1>
+            <p>Sign in to access your structural inspection dashboard.</p>
           </div>
           {error ? <div className="alert danger">{error}</div> : null}
           <label>
@@ -671,6 +680,7 @@ function InspectionStartForm({ draft, setDraft, onStart, isStarting }) {
 function BuildingsPage({ buildings, loading, onRefresh, onStartInspection, isStarting, onNavigateHistory }) {
   const [draft, setDraft] = useState(defaultInspectionDraft);
   const [focusedBuilding, setFocusedBuilding] = useState(null);
+  const totalFloors = buildings.reduce((sum, building) => sum + Number(building.number_of_floors || 0), 0);
 
   const prefillFromBuilding = (building) => {
     setDraft({
@@ -689,8 +699,8 @@ function BuildingsPage({ buildings, loading, onRefresh, onStartInspection, isSta
   return (
     <>
       <PageHeader
-        title="Buildings"
-        subtitle="Engineer-owned buildings and new field inspection setup"
+        title="Buildings Overview"
+        subtitle="Manage and monitor structural inspections across all buildings"
         actions={
           <button className="secondary-button" type="button" onClick={onRefresh}>
             <RefreshCw size={18} />
@@ -698,6 +708,13 @@ function BuildingsPage({ buildings, loading, onRefresh, onStartInspection, isSta
           </button>
         }
       />
+
+      <section className="overview-stats">
+        <Metric label="Total Buildings" value={buildings.length} />
+        <Metric label="Total Floors" value={totalFloors} />
+        <Metric label="Selected Building" value={focusedBuilding ? 1 : 0} />
+        <Metric label="Local Records" value={loading ? "..." : buildings.length} />
+      </section>
 
       <section className="setup-band">
         <div className="setup-copy">
@@ -715,7 +732,7 @@ function BuildingsPage({ buildings, loading, onRefresh, onStartInspection, isSta
         />
       </section>
 
-      <section className="content-grid two-column">
+      <section className="content-grid two-column buildings-layout">
         <article className="panel">
           <div className="panel-heading">
             <h2>Building Records</h2>
@@ -1260,9 +1277,9 @@ function LiveInspectionPage({
   if (!inspection) {
     return (
       <>
-        <PageHeader
-          title="Live Inspection"
-          subtitle="Start a field session before uploading floor frames"
+      <PageHeader
+        title="Live Drone Inspection"
+        subtitle="Start a field session before uploading floor frames"
           actions={
             <button className="secondary-button" type="button" onClick={onBackToBuildings}>
               <ArrowLeft size={18} />
@@ -1306,7 +1323,7 @@ function LiveInspectionPage({
   return (
     <>
       <PageHeader
-        title="Live Inspection"
+        title="Live Drone Inspection"
         subtitle={`${inspection.building?.name || "Inspection"} · ${floorLabel(currentFloor)}`}
         actions={
           <>
@@ -1612,6 +1629,11 @@ function HistoryPage({ buildings, reports, sessionsByBuilding, loading, onLoadHi
       report: reports.find((item) => item.inspection_session_id === session.id)
     }))
   );
+  const sessionsThisMonth = rows.filter(({ session }) => {
+    const date = new Date(session.started_at || session.created_at || 0);
+    const now = new Date();
+    return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+  }).length;
 
   useEffect(() => {
     onLoadHistory();
@@ -1620,8 +1642,8 @@ function HistoryPage({ buildings, reports, sessionsByBuilding, loading, onLoadHi
   return (
     <>
       <PageHeader
-        title="History"
-        subtitle="Previous inspection sessions and read-only floor results"
+        title="Inspection History"
+        subtitle="View all previous inspection sessions and their results"
         actions={
           <button className="secondary-button" type="button" onClick={onLoadHistory}>
             <RefreshCw size={18} />
@@ -1629,6 +1651,12 @@ function HistoryPage({ buildings, reports, sessionsByBuilding, loading, onLoadHi
           </button>
         }
       />
+      <section className="overview-stats">
+        <Metric label="Total Sessions" value={rows.length} />
+        <Metric label="Floors Reviewed" value={rows.reduce((sum, row) => sum + Number(row.session.floor_sessions?.length || 0), 0)} />
+        <Metric label="Reports Generated" value={reports.length} />
+        <Metric label="This Month" value={sessionsThisMonth} />
+      </section>
       <section className="panel">
         <div className="table-wrap">
           <table className="data-table">
