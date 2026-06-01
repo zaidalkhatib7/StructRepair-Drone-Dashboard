@@ -88,6 +88,7 @@ const REALTIME_SETTINGS_STORAGE_KEY = "structrepair_realtime_stream_settings";
 const REALTIME_URL_STORAGE_KEY = "structrepair_realtime_stream_url";
 
 const realtimeDefaults = {
+  mode: "columns_beams",
   left: 0,
   top: 0,
   width: 960,
@@ -274,6 +275,7 @@ function loadRealtimeSettings() {
 
 function buildRealtimeStreamUrl(settings) {
   const url = new URL("/stream", REALTIME_HELPER_URL);
+  url.searchParams.set("mode", settings.mode || realtimeDefaults.mode);
   url.searchParams.set("left", Math.round(Number(settings.left) || realtimeDefaults.left));
   url.searchParams.set("top", Math.round(Number(settings.top) || realtimeDefaults.top));
   url.searchParams.set("width", Math.round(Number(settings.width) || realtimeDefaults.width));
@@ -829,15 +831,14 @@ function ExteriorOverviewPanel({ inspectionMedia, inspectionPredictions, token, 
   );
 }
 
-function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
+function RealtimeStreamPanel({ onCaptureHelper, onCaptureExterior, isCapturing, isCapturingExterior, disabled, exteriorDisabled }) {
   const [settings, setSettings] = useState(loadRealtimeSettings);
-  const [streamUrl, setStreamUrl] = useState(
-    () => localStorage.getItem(REALTIME_URL_STORAGE_KEY) || buildRealtimeStreamUrl(loadRealtimeSettings())
-  );
+  const [streamUrl, setStreamUrl] = useState(() => buildRealtimeStreamUrl(loadRealtimeSettings()));
   const [isConnected, setIsConnected] = useState(false);
   const [streamVersion, setStreamVersion] = useState(0);
   const [helperStatus, setHelperStatus] = useState("Helper not checked.");
   const [isChecking, setIsChecking] = useState(false);
+  const isExteriorMode = settings.mode === "building_exterior";
 
   const syncUrlFromSettings = (nextSettings) => {
     const nextUrl = buildRealtimeStreamUrl(nextSettings);
@@ -861,6 +862,20 @@ function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
     });
   };
 
+  const switchMode = (mode) => {
+    setSettings((current) => {
+      const next = { ...current, mode };
+      syncUrlFromSettings(next);
+      setIsConnected(false);
+      setHelperStatus(
+        mode === "building_exterior"
+          ? "Exterior mode selected. Live guide only; deep floor analysis is disabled."
+          : "Deep mode selected. Captures will be sent to the current floor."
+      );
+      return next;
+    });
+  };
+
   const saveSettings = () => {
     localStorage.setItem(REALTIME_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
     localStorage.setItem(REALTIME_URL_STORAGE_KEY, streamUrl);
@@ -878,7 +893,14 @@ function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
 
   const connectStream = (event) => {
     event.preventDefault();
-    const nextUrl = streamUrl.trim() || buildRealtimeStreamUrl(settings);
+    let nextUrl = streamUrl.trim() || buildRealtimeStreamUrl(settings);
+    try {
+      const url = new URL(nextUrl);
+      url.searchParams.set("mode", settings.mode || realtimeDefaults.mode);
+      nextUrl = url.toString();
+    } catch {
+      nextUrl = buildRealtimeStreamUrl(settings);
+    }
     localStorage.setItem(REALTIME_URL_STORAGE_KEY, nextUrl);
     setStreamUrl(nextUrl);
     setIsConnected(true);
@@ -916,10 +938,10 @@ function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
     <article className="panel stream-panel">
       <div className="panel-heading">
         <div>
-          <h2>Realtime Detector Stream</h2>
-          <p>{isConnected ? streamUrl : "Connect the local realtime detector helper."}</p>
+          <h2>{isExteriorMode ? "Exterior Building Screening" : "Deep Columns/Beams Stream"}</h2>
+          <p>{isConnected ? streamUrl : isExteriorMode ? "Connect the outside building damage guide." : "Connect the deep structural inspection helper."}</p>
         </div>
-        <StatusBadge value={isConnected ? "connected" : "offline"} tone={isConnected ? "success" : "neutral"} />
+        <StatusBadge value={isExteriorMode ? "exterior" : "deep"} tone={isConnected ? "success" : "neutral"} />
       </div>
 
       <div className={`stream-preview ${isConnected ? "connected" : ""}`}>
@@ -934,6 +956,22 @@ function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
       </div>
 
       <form className="stream-form" onSubmit={connectStream}>
+        <div className="mode-switch" role="group" aria-label="Realtime detection mode">
+          <button
+            className={`secondary-button dense ${isExteriorMode ? "active" : ""}`}
+            type="button"
+            onClick={() => switchMode("building_exterior")}
+          >
+            Exterior: building damage
+          </button>
+          <button
+            className={`secondary-button dense ${!isExteriorMode ? "active" : ""}`}
+            type="button"
+            onClick={() => switchMode("columns_beams")}
+          >
+            Deep: columns/beams
+          </button>
+        </div>
         <label className="stream-url-field">
           Stream URL
           <input value={streamUrl} type="url" onChange={(event) => setStreamUrl(event.target.value)} />
@@ -986,10 +1024,21 @@ function RealtimeStreamPanel({ onCaptureHelper, isCapturing, disabled }) {
             className="secondary-button"
             type="button"
             onClick={() => onCaptureHelper(settings)}
-            disabled={disabled || isCapturing}
+            disabled={disabled || isCapturing || isExteriorMode}
+            title={isExteriorMode ? "Switch to Deep mode to capture a floor frame for Laravel analysis." : undefined}
           >
             {isCapturing ? <Loader2 className="spin" size={17} /> : <Radio size={17} />}
             Detect / Analyze Current View
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onCaptureExterior(settings)}
+            disabled={exteriorDisabled || isCapturingExterior || !isExteriorMode}
+            title={!isExteriorMode ? "Switch to Exterior mode to capture a building overview." : undefined}
+          >
+            {isCapturingExterior ? <Loader2 className="spin" size={17} /> : <Building2 size={17} />}
+            Detect Exterior Current View
           </button>
           <button className="secondary-button" type="button" onClick={saveSettings}>
             <Save size={17} />
@@ -1030,6 +1079,7 @@ function LiveInspectionPage({
   onUploadFrame,
   onRunExteriorDetection,
   onCaptureHelper,
+  onCaptureExterior,
   onRefresh,
   onNextFloor,
   onStopInspection,
@@ -1134,8 +1184,11 @@ function LiveInspectionPage({
           {!readonly ? (
             <RealtimeStreamPanel
               onCaptureHelper={onCaptureHelper}
+              onCaptureExterior={onCaptureExterior}
               isCapturing={isCapturing}
+              isCapturingExterior={isExteriorRunning}
               disabled={!currentFloor || !active}
+              exteriorDisabled={!inspection?.id || !active}
             />
           ) : null}
 
@@ -2228,6 +2281,48 @@ export default function App() {
     }
   };
 
+  const captureExteriorHelper = async (captureSettings = {}) => {
+    if (!inspection?.id) {
+      return;
+    }
+
+    setIsExteriorRunning(true);
+    setGlobalError("");
+    try {
+      const response = await fetch(`${REALTIME_HELPER_URL}/capture-exterior-upload`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          backend_url: API_BASE_URL,
+          inspection_session_id: Number(inspection.id),
+          token,
+          capture_settings: {
+            left: Number(captureSettings.left ?? realtimeDefaults.left),
+            top: Number(captureSettings.top ?? realtimeDefaults.top),
+            width: Number(captureSettings.width ?? realtimeDefaults.width),
+            height: Number(captureSettings.height ?? realtimeDefaults.height)
+          }
+        })
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail?.message || payload.detail || payload.message || "Exterior helper capture failed.");
+      }
+
+      const mediaId = payload.media_asset_id || payload.backend_response?.media_asset_id || "unknown";
+      addLog(`Exterior detection queued as media ${mediaId}`, "success");
+      await refreshFloorData();
+    } catch (error) {
+      handleApiError(error);
+    } finally {
+      setIsExteriorRunning(false);
+    }
+  };
+
   const nextFloor = async () => {
     const nextIndex = floorIndex + 1;
     const floors = inspection?.floor_sessions || [];
@@ -2586,6 +2681,7 @@ export default function App() {
         onUploadFrame={uploadFrame}
         onRunExteriorDetection={runExteriorDetection}
         onCaptureHelper={captureHelper}
+        onCaptureExterior={captureExteriorHelper}
         onRefresh={() => refreshFloorData()}
         onNextFloor={nextFloor}
         onStopInspection={stopInspection}
