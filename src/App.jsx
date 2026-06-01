@@ -33,9 +33,12 @@ import {
   XCircle,
   Zap
 } from "lucide-react";
-import { ApiError, apiRequest, downloadRequest, mediaAssetUrl, saveBlob } from "./api.js";
+import { ApiError, apiRequest, cloudApiRequest, downloadRequest, mediaAssetUrl, saveBlob } from "./api.js";
 import {
   API_BASE_URL,
+  CLOUD_API_BASE_URL,
+  CLOUD_BACKEND_ORIGIN,
+  CLOUD_TOKEN_STORAGE_KEY,
   REALTIME_HELPER_URL,
   REVIEW_GRADES,
   REVERB,
@@ -86,6 +89,7 @@ const defaultInspectionDraft = {
 
 const REALTIME_SETTINGS_STORAGE_KEY = "structrepair_realtime_stream_settings";
 const REALTIME_URL_STORAGE_KEY = "structrepair_realtime_stream_url";
+const CLOUD_SYNC_STORAGE_KEY = "structrepair_cloud_report_sync_state";
 
 const realtimeDefaults = {
   mode: "columns_beams",
@@ -262,6 +266,153 @@ function buildInspectionPayload(draft) {
   return { building, disaster_area: true };
 }
 
+function loadCloudSyncState() {
+  try {
+    return JSON.parse(localStorage.getItem(CLOUD_SYNC_STORAGE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function normalizeRiskLevel(value) {
+  const risk = String(value || "").toLowerCase();
+  if (["critical"].includes(risk)) return "critical";
+  if (["severe", "high", "danger"].includes(risk)) return "severe";
+  if (["moderate", "medium", "elevated", "pending"].includes(risk)) return "moderate";
+  return "low";
+}
+
+function normalizeReportLanguage(value) {
+  return value === "ar" ? "ar" : "en";
+}
+
+function normalizeCity(value) {
+  return SYRIAN_CITIES.includes(value) ? value : "Damascus";
+}
+
+function optionalNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function findSessionForReport(report, activeInspection, groupedSessions) {
+  const reportSessionId = Number(report.inspection_session_id || report.inspection_session?.id || 0);
+  if (report.inspection_session?.floor_sessions?.length) {
+    return report.inspection_session;
+  }
+
+  if (activeInspection?.id && Number(activeInspection.id) === reportSessionId && activeInspection.floor_sessions?.length) {
+    return activeInspection;
+  }
+
+  const sessions = Object.values(groupedSessions || {}).flat();
+  return sessions.find((session) => Number(session.id) === reportSessionId) || report.inspection_session || null;
+}
+
+function buildCloudSyncManifest(report, session, floorPackages = []) {
+  const building = session?.building || report.inspection_session?.building || {};
+  const floorPackageById = new Map(floorPackages.map((item) => [Number(item.floorSession?.id), item]));
+
+  const floors = sortFloorSessions(session?.floor_sessions || []).map((floorSession) => {
+    const floorPackage = floorPackageById.get(Number(floorSession.id));
+    const assessments = floorPackage?.assessments || [];
+    const severityValues = assessments
+      .map((assessment) => optionalNumber(assessment.severity_score ?? assessment.damage_score, null))
+      .filter((value) => value !== null);
+    const overallSeverity =
+      floorSession.overall_severity_score ?? floorSession.damage_score ??
+      (severityValues.length ? severityValues.reduce((sum, value) => sum + value, 0) / severityValues.length : report.damage_score);
+
+    return {
+      local_floor_session_id: floorSession.id,
+      level_number: Number(floorSession.floor?.level_number ?? floorSession.level_number ?? 0),
+      name: floorSession.floor?.name || floorSession.name || floorLabel(floorSession),
+      status: floorSession.status || "completed",
+      overall_severity_score: optionalNumber(overallSeverity),
+      risk_level: normalizeRiskLevel(floorSession.risk_level || report.risk_level)
+    };
+  });
+
+  const elements = floorPackages.flatMap(({ floorSession, elements: floorElements = [] }) =>
+    floorElements
+      .map((element) => {
+        const boundingBox = normalizeBox(element.bounding_box || element.bbox || element.box);
+        if (!boundingBox || !["column", "beam"].includes(element.type)) {
+          return null;
+        }
+
+        return {
+          local_id: element.id,
+          local_floor_session_id: floorSession.id,
+          production_id: element.production_id || element.label || `${element.type}-${element.id}`,
+          type: element.type,
+          confidence: optionalNumber(element.confidence),
+          bounding_box: boundingBox
+        };
+      })
+      .filter(Boolean)
+  );
+
+  const damageAssessments = floorPackages.flatMap(({ assessments = [] }) =>
+    assessments
+      .map((assessment) => {
+        const structuralElementId = assessment.structural_element_id || assessment.structural_element?.id;
+        if (!structuralElementId) {
+          return null;
+        }
+
+        return {
+          local_structural_element_id: structuralElementId,
+          raw_label: assessment.raw_label || assessment.risk_level || assessment.raw_grade || "moderate",
+          raw_grade: normalizeGrade(assessment.raw_grade || assessment.raw_label),
+          adjusted_grade: normalizeGrade(assessment.adjusted_grade || assessment.raw_grade || assessment.raw_label),
+          confidence: optionalNumber(assessment.confidence),
+          risk_level: normalizeRiskLevel(assessment.risk_level || assessment.raw_label),
+          review_status: assessment.review_status || "approved",
+          adjustment_reason: assessment.adjustment_reason || "Synced from offline dashboard review."
+        };
+      })
+      .filter(Boolean)
+  );
+
+  const damageScore = optionalNumber(report.damage_score ?? report.overall_damage_score);
+  const repairabilityScore = optionalNumber(report.repairability_score ?? report.overall_repairability_score, 100 - damageScore);
+
+  return {
+    local_inspection_session_id: session?.id || report.inspection_session_id,
+    building: {
+      name: building.name || `Building ${report.inspection_session_id || report.id}`,
+      city: normalizeCity(building.city),
+      number_of_floors: Number(building.number_of_floors || floors.length || 1)
+    },
+    inspection: {
+      session_code: session?.session_code || report.inspection_session?.session_code || `LOCAL-REPORT-${report.id}`,
+      status: session?.status || "completed",
+      started_at: session?.started_at || session?.created_at || report.created_at || new Date().toISOString(),
+      completed_at: session?.completed_at || report.finalized_at || report.created_at || new Date().toISOString()
+    },
+    finalized_report: {
+      title: report.title || `Inspection Report - ${building.name || "Building"}`,
+      summary: report.summary || report.executive_summary || "Reviewed structural inspection summary.",
+      language: normalizeReportLanguage(report.language),
+      damage_score: damageScore,
+      repairability_score: repairabilityScore,
+      risk_level: normalizeRiskLevel(report.risk_level),
+      status: "unpublished",
+      finalized_at: report.finalized_at || report.created_at || new Date().toISOString()
+    },
+    exterior_assessment: {
+      damage_score_percent: optionalNumber(report.exterior_damage_score ?? report.damage_score),
+      repairability_percent: optionalNumber(report.exterior_repairability_score ?? report.repairability_score, 100 - damageScore),
+      risk_level: normalizeRiskLevel(report.exterior_risk_level || report.risk_level),
+      damaged_part_count: Number(report.exterior_damaged_part_count || report.damaged_part_count || 0)
+    },
+    floors,
+    elements,
+    damage_assessments: damageAssessments
+  };
+}
+
 function loadRealtimeSettings() {
   try {
     return {
@@ -307,7 +458,7 @@ function PageHeader({ title, subtitle, actions }) {
   );
 }
 
-function AppShell({ activeView, user, onNavigate, onLogout, children }) {
+function AppShell({ activeView, user, cloudStatus, cloudReportCount, onNavigate, onLogout, children }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const activeItem = navItems.find((item) => item.id === activeView) || navItems[0];
 
@@ -361,6 +512,10 @@ function AppShell({ activeView, user, onNavigate, onLogout, children }) {
             </div>
           </div>
           <div className="topbar-right">
+            <StatusBadge
+              value={`cloud ${cloudStatus}${cloudReportCount ? ` · ${cloudReportCount}` : ""}`}
+              tone={["online", "synced", "published"].includes(cloudStatus) ? "success" : cloudStatus === "checking" || cloudStatus === "syncing" ? "warning" : cloudStatus === "failed" ? "danger" : "neutral"}
+            />
             <button className="icon-button light" type="button" aria-label="Notifications">
               <Bell size={19} />
             </button>
@@ -1535,8 +1690,74 @@ function HistoryPage({ buildings, reports, sessionsByBuilding, loading, onLoadHi
   );
 }
 
-function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnpublish }) {
+function CloudLoginForm({ cloudToken, isLoading, onLogin, onLogout }) {
+  const [email, setEmail] = useState("engineer@example.com");
+  const [password, setPassword] = useState("password");
+
+  if (cloudToken) {
+    return (
+      <div className="cloud-auth-row">
+        <span>
+          <strong>VPS session connected</strong>
+          <small>Sync and publish actions use the cloud API.</small>
+        </span>
+        <button className="secondary-button dense" type="button" onClick={onLogout}>
+          <XCircle size={15} />
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="cloud-login-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onLogin({ email, password });
+      }}
+    >
+      <label>
+        VPS Email
+        <input value={email} type="email" onChange={(event) => setEmail(event.target.value)} />
+      </label>
+      <label>
+        VPS Password
+        <input value={password} type="password" onChange={(event) => setPassword(event.target.value)} />
+      </label>
+      <button className="primary-button" type="submit" disabled={isLoading}>
+        {isLoading ? <Loader2 className="spin" size={17} /> : <Server size={17} />}
+        Connect VPS
+      </button>
+    </form>
+  );
+}
+
+function ReportsPage({
+  reports,
+  loading,
+  cloudStatus,
+  cloudReports,
+  cloudToken,
+  cloudSyncState,
+  cloudBusyReportId,
+  cloudAuthLoading,
+  onRefresh,
+  onRefreshCloud,
+  onDownload,
+  onSyncCloud,
+  onCloudLogin,
+  onCloudLogout,
+  onPublish,
+  onUnpublish
+}) {
   const [selectedReport, setSelectedReport] = useState(null);
+  const selectedCloudState = selectedReport ? cloudSyncState[selectedReport.id] || {} : {};
+  const selectedCloudReportId = selectedCloudState.cloud_finalized_report_id;
+  const selectedCloudStatus =
+    selectedCloudState.cloud_report_status || selectedCloudState.cloud_sync_status || "local only";
+  const selectedPublished = selectedCloudStatus === "published";
+  const selectedBusy = selectedReport ? cloudBusyReportId === selectedReport.id : false;
 
   useEffect(() => {
     if (selectedReport) {
@@ -1551,12 +1772,18 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
     <>
       <PageHeader
         title="Reports"
-        subtitle="Finalized reports, private download, and community publishing"
+        subtitle="Finalized local reports, VPS sync, and community publishing"
         actions={
-          <button className="secondary-button" type="button" onClick={onRefresh}>
-            <RefreshCw size={18} />
-            Refresh
-          </button>
+          <>
+            <button className="secondary-button" type="button" onClick={onRefresh}>
+              <RefreshCw size={18} />
+              Refresh Local
+            </button>
+            <button className="secondary-button" type="button" onClick={onRefreshCloud}>
+              <Server size={18} />
+              Check VPS
+            </button>
+          </>
         }
       />
       <section className="content-grid two-column reports-layout">
@@ -1570,6 +1797,8 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
           <div className="record-list">
             {reports.map((report) => {
               const building = report.inspection_session?.building;
+              const cloudMeta = cloudSyncState[report.id] || {};
+              const cloudValue = cloudMeta.cloud_report_status || cloudMeta.cloud_sync_status || "local only";
               return (
                 <div className="record-row" key={report.id}>
                   <div>
@@ -1584,6 +1813,7 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
                   </div>
                   <div className="row-actions">
                     <StatusBadge value={report.status || "unpublished"} />
+                    <StatusBadge value={`VPS ${cloudValue}`} />
                     <button className="icon-button light" type="button" onClick={() => setSelectedReport(report)} aria-label="View report">
                       <Eye size={18} />
                     </button>
@@ -1600,11 +1830,17 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
         <article className="panel detail-panel">
           <div className="panel-heading">
             <h2>Report Detail</h2>
-            {selectedReport ? <StatusBadge value={selectedReport.status || "unpublished"} /> : null}
+            {selectedReport ? <StatusBadge value={`VPS ${selectedCloudStatus}`} /> : null}
           </div>
           {selectedReport ? (
             <div className="report-detail">
               <img src={ASSETS.frameScan} alt="" />
+              <CloudLoginForm
+                cloudToken={cloudToken}
+                isLoading={cloudAuthLoading}
+                onLogin={onCloudLogin}
+                onLogout={onCloudLogout}
+              />
               <dl>
                 <div>
                   <dt>Title</dt>
@@ -1622,21 +1858,43 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
                   <dt>Finalized</dt>
                   <dd>{formatDate(selectedReport.finalized_at || selectedReport.created_at)}</dd>
                 </div>
+                <div>
+                  <dt>VPS Report</dt>
+                  <dd>{selectedCloudReportId ? `#${selectedCloudReportId}` : "Not synced"}</dd>
+                </div>
+                <div>
+                  <dt>VPS Status</dt>
+                  <dd>{selectedCloudStatus}</dd>
+                </div>
               </dl>
               <div className="control-row">
                 <button className="primary-button" type="button" onClick={() => onDownload(selectedReport)}>
                   <Download size={17} />
                   Download PDF
                 </button>
-                {selectedReport.status === "published" ? (
-                  <button className="secondary-button" type="button" onClick={() => onUnpublish(selectedReport)}>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => onSyncCloud(selectedReport)}
+                  disabled={!cloudToken || selectedBusy}
+                >
+                  {selectedBusy && !selectedCloudReportId ? <Loader2 className="spin" size={17} /> : <Send size={17} />}
+                  {selectedCloudReportId ? "Re-sync VPS" : "Sync to VPS"}
+                </button>
+                {selectedPublished ? (
+                  <button className="secondary-button" type="button" onClick={() => onUnpublish(selectedReport)} disabled={!cloudToken || selectedBusy}>
                     <XCircle size={17} />
                     Unpublish
                   </button>
                 ) : (
-                  <button className="secondary-button" type="button" onClick={() => onPublish(selectedReport)}>
-                    <CheckCircle2 size={17} />
-                    Publish
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onPublish(selectedReport)}
+                    disabled={!cloudToken || !selectedCloudReportId || selectedBusy}
+                  >
+                    {selectedBusy && selectedCloudReportId ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
+                    Publish VPS
                   </button>
                 )}
               </div>
@@ -1644,6 +1902,13 @@ function ReportsPage({ reports, loading, onRefresh, onDownload, onPublish, onUnp
           ) : (
             <EmptyState icon={FileText} label="Select a report" />
           )}
+          <div className="tool-note">
+            VPS cloud: <strong>{cloudStatus}</strong> · public reports visible: <strong>{cloudReports.length}</strong>
+            <br />
+            Cloud origin: <strong>{CLOUD_BACKEND_ORIGIN}</strong>
+            <br />
+            Sync endpoint: <strong>{CLOUD_API_BASE_URL}/sync/inspection-packages</strong>
+          </div>
         </article>
       </section>
     </>
@@ -1799,6 +2064,7 @@ function LocalToolsPage({
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) || "");
+  const [cloudToken, setCloudToken] = useState(() => localStorage.getItem(CLOUD_TOKEN_STORAGE_KEY) || "");
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -1829,6 +2095,11 @@ export default function App() {
   const [selectedDevice, setSelectedDevice] = useState("");
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toolsError, setToolsError] = useState("");
+  const [cloudStatus, setCloudStatus] = useState("offline");
+  const [cloudReports, setCloudReports] = useState([]);
+  const [cloudSyncState, setCloudSyncState] = useState(loadCloudSyncState);
+  const [cloudBusyReportId, setCloudBusyReportId] = useState(null);
+  const [cloudAuthLoading, setCloudAuthLoading] = useState(false);
   const socketRef = useRef(null);
 
   const currentFloor = useMemo(() => {
@@ -1850,9 +2121,33 @@ export default function App() {
     );
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(CLOUD_SYNC_STORAGE_KEY, JSON.stringify(cloudSyncState));
+  }, [cloudSyncState]);
+
+  const updateReportCloudState = useCallback((reportId, patch) => {
+    setCloudSyncState((current) => ({
+      ...current,
+      [reportId]: {
+        ...(current[reportId] || {}),
+        ...patch
+      }
+    }));
+  }, []);
+
+  const clearCloudAuth = useCallback((message = "") => {
+    localStorage.removeItem(CLOUD_TOKEN_STORAGE_KEY);
+    setCloudToken("");
+    if (message) {
+      setGlobalError(message);
+    }
+  }, []);
+
   const clearAuth = useCallback((message = "") => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(CLOUD_TOKEN_STORAGE_KEY);
     setToken("");
+    setCloudToken("");
     setUser(null);
     setInspection(null);
     setWorkflow("idle");
@@ -1881,6 +2176,29 @@ export default function App() {
     [addLog, clearAuth]
   );
 
+  const handleCloudError = useCallback(
+    (error, reportId = null) => {
+      const message = messageFromError(error);
+      if (reportId) {
+        updateReportCloudState(reportId, {
+          cloud_sync_status: "failed",
+          cloud_error: message,
+          cloud_synced_at: new Date().toISOString()
+        });
+      }
+
+      if (error instanceof ApiError && error.status === 401) {
+        clearCloudAuth("VPS session expired. Sign in to the VPS again.");
+      } else {
+        setGlobalError(message);
+      }
+
+      setCloudStatus("failed");
+      addLog(`VPS error: ${message}`, "danger");
+    },
+    [addLog, clearCloudAuth, updateReportCloudState]
+  );
+
   const loadGlobalData = useCallback(
     async (activeToken = token) => {
       if (!activeToken) {
@@ -1904,6 +2222,25 @@ export default function App() {
     },
     [handleApiError, token]
   );
+
+  const checkCloudStatus = useCallback(async () => {
+    setCloudStatus((current) => (["syncing", "synced", "published"].includes(current) ? current : "checking"));
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 4500);
+
+    try {
+      const payload = await cloudApiRequest("/community/reports", {
+        signal: controller.signal
+      });
+      setCloudReports(unwrapArray(payload));
+      setCloudStatus((current) => (["syncing", "synced", "published"].includes(current) ? current : "online"));
+    } catch {
+      setCloudReports([]);
+      setCloudStatus((current) => (current === "syncing" ? "syncing" : "offline"));
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }, []);
 
   const refreshFloorData = useCallback(
     async (floorSessionId = currentFloor?.id, inspectionSessionId = inspection?.id, activeToken = token) => {
@@ -1986,6 +2323,12 @@ export default function App() {
       active = false;
     };
   }, [clearAuth, loadGlobalData, token]);
+
+  useEffect(() => {
+    checkCloudStatus();
+    const interval = window.setInterval(checkCloudStatus, 30000);
+    return () => window.clearInterval(interval);
+  }, [checkCloudStatus]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0 });
@@ -2121,6 +2464,36 @@ export default function App() {
     } finally {
       setAuthLoading(false);
     }
+  };
+
+  const handleCloudLogin = async ({ email, password }) => {
+    setCloudAuthLoading(true);
+    setGlobalError("");
+    try {
+      const payload = await cloudApiRequest("/auth/login", {
+        method: "POST",
+        body: { email, password }
+      });
+      const accessToken = payload.data?.access_token || payload.data?.token || payload.access_token || payload.token;
+      if (!accessToken) {
+        throw new ApiError("VPS login did not return an access token.", { payload });
+      }
+
+      localStorage.setItem(CLOUD_TOKEN_STORAGE_KEY, accessToken);
+      setCloudToken(accessToken);
+      setCloudStatus("online");
+      setNotice("VPS session connected.");
+      await checkCloudStatus();
+    } catch (error) {
+      handleCloudError(error);
+    } finally {
+      setCloudAuthLoading(false);
+    }
+  };
+
+  const handleCloudLogout = () => {
+    clearCloudAuth();
+    setNotice("VPS session disconnected.");
   };
 
   const handleLogout = async () => {
@@ -2442,23 +2815,144 @@ export default function App() {
     }
   };
 
-  const publishReport = async (report) => {
+  const collectReportSyncData = async (report) => {
+    const session = findSessionForReport(report, inspection, sessionsByBuilding);
+    const floorSessions = sortFloorSessions(session?.floor_sessions || []);
+    const floorPackages = await Promise.all(
+      floorSessions.map(async (floorSession) => {
+        if (!floorSession?.id) {
+          return { floorSession, elements: [], assessments: [] };
+        }
+
+        try {
+          const [elementsPayload, assessmentsPayload] = await Promise.all([
+            apiRequest(`/api/v1/floor-sessions/${floorSession.id}/structural-elements`, { token }),
+            apiRequest(`/api/v1/floor-sessions/${floorSession.id}/element-damage-assessments`, { token })
+          ]);
+
+          return {
+            floorSession,
+            elements: unwrapArray(elementsPayload),
+            assessments: unwrapArray(assessmentsPayload)
+          };
+        } catch (error) {
+          addLog(`Could not include floor ${floorSession.id} details in VPS manifest: ${messageFromError(error)}`, "warning");
+          return { floorSession, elements: [], assessments: [] };
+        }
+      })
+    );
+
+    return { session, floorPackages };
+  };
+
+  const syncReportToCloud = async (report) => {
+    if (!cloudToken) {
+      setGlobalError("Sign in to the VPS before syncing a report.");
+      return;
+    }
+
+    setCloudBusyReportId(report.id);
+    setCloudStatus("syncing");
+    updateReportCloudState(report.id, {
+      cloud_sync_status: "syncing",
+      cloud_error: ""
+    });
+
     try {
-      await apiRequest(`/api/v1/finalized-reports/${report.id}/publish`, { method: "POST", token });
-      setNotice(`Report ${report.id} published.`);
-      await loadGlobalData(token);
+      const [reportPdfBlob, syncData] = await Promise.all([
+        downloadRequest(`/api/v1/finalized-reports/${report.id}/download`, token),
+        collectReportSyncData(report)
+      ]);
+      const manifest = buildCloudSyncManifest(report, syncData.session, syncData.floorPackages);
+      const form = new FormData();
+      form.append("manifest", JSON.stringify(manifest));
+      form.append("report_pdf", reportPdfBlob, `${slugify(report.title, `structrepair-report-${report.id}`)}.pdf`);
+
+      const payload = await cloudApiRequest("/sync/inspection-packages", {
+        method: "POST",
+        token: cloudToken,
+        body: form
+      });
+      const data = payload.data || payload;
+      const cloudReportId = data.finalized_report_id || data.cloud_finalized_report_id || data.finalized_report?.id;
+      const cloudInspectionId = data.cloud_inspection_session_id || data.inspection_session?.id;
+      const cloudReportStatus = data.finalized_report?.status || "synced";
+
+      updateReportCloudState(report.id, {
+        cloud_inspection_session_id: cloudInspectionId,
+        cloud_finalized_report_id: cloudReportId,
+        cloud_sync_status: cloudReportStatus === "published" ? "published" : data.status || "synced",
+        cloud_report_status: cloudReportStatus,
+        cloud_synced_at: new Date().toISOString(),
+        cloud_error: ""
+      });
+      setCloudStatus(cloudReportStatus === "published" ? "published" : "synced");
+      setNotice(`Report ${report.id} synced to VPS${cloudReportId ? ` as cloud report ${cloudReportId}` : ""}.`);
+      await checkCloudStatus();
     } catch (error) {
-      handleApiError(error);
+      handleCloudError(error, report.id);
+    } finally {
+      setCloudBusyReportId(null);
+    }
+  };
+
+  const publishReport = async (report) => {
+    const cloudReportId = cloudSyncState[report.id]?.cloud_finalized_report_id;
+    if (!cloudToken) {
+      setGlobalError("Sign in to the VPS before publishing.");
+      return;
+    }
+    if (!cloudReportId) {
+      setGlobalError("Sync this report to the VPS before publishing.");
+      return;
+    }
+
+    setCloudBusyReportId(report.id);
+    try {
+      await cloudApiRequest(`/finalized-reports/${cloudReportId}/publish`, { method: "POST", token: cloudToken });
+      updateReportCloudState(report.id, {
+        cloud_sync_status: "published",
+        cloud_report_status: "published",
+        cloud_published_at: new Date().toISOString(),
+        cloud_error: ""
+      });
+      setCloudStatus("published");
+      setNotice(`Cloud report ${cloudReportId} published to the community API.`);
+      await checkCloudStatus();
+    } catch (error) {
+      handleCloudError(error, report.id);
+    } finally {
+      setCloudBusyReportId(null);
     }
   };
 
   const unpublishReport = async (report) => {
+    const cloudReportId = cloudSyncState[report.id]?.cloud_finalized_report_id;
+    if (!cloudToken) {
+      setGlobalError("Sign in to the VPS before unpublishing.");
+      return;
+    }
+    if (!cloudReportId) {
+      setGlobalError("Sync this report to the VPS before unpublishing.");
+      return;
+    }
+
+    setCloudBusyReportId(report.id);
     try {
-      await apiRequest(`/api/v1/finalized-reports/${report.id}/unpublish`, { method: "POST", token });
-      setNotice(`Report ${report.id} unpublished.`);
-      await loadGlobalData(token);
+      await cloudApiRequest(`/finalized-reports/${cloudReportId}/unpublish`, { method: "POST", token: cloudToken });
+      updateReportCloudState(report.id, {
+        cloud_sync_status: "synced",
+        cloud_report_status: "unpublished",
+        cloud_unpublished_at: new Date().toISOString(),
+        cloud_error: ""
+      });
+      setCloudStatus("synced");
+      setNotice(`Cloud report ${cloudReportId} unpublished.`);
+      await checkCloudStatus();
     } catch (error) {
-      handleApiError(error);
+      handleCloudError(error, report.id);
+    } finally {
+      setCloudBusyReportId(null);
     }
   };
 
@@ -2707,8 +3201,18 @@ export default function App() {
       <ReportsPage
         reports={reports}
         loading={globalLoading}
+        cloudStatus={cloudStatus}
+        cloudReports={cloudReports}
+        cloudToken={cloudToken}
+        cloudSyncState={cloudSyncState}
+        cloudBusyReportId={cloudBusyReportId}
+        cloudAuthLoading={cloudAuthLoading}
         onRefresh={() => loadGlobalData(token)}
+        onRefreshCloud={checkCloudStatus}
         onDownload={downloadReport}
+        onSyncCloud={syncReportToCloud}
+        onCloudLogin={handleCloudLogin}
+        onCloudLogout={handleCloudLogout}
         onPublish={publishReport}
         onUnpublish={unpublishReport}
       />
@@ -2736,7 +3240,14 @@ export default function App() {
   }
 
   return (
-    <AppShell activeView={activeView} user={user} onNavigate={setActiveView} onLogout={handleLogout}>
+    <AppShell
+      activeView={activeView}
+      user={user}
+      cloudStatus={cloudStatus}
+      cloudReportCount={cloudReports.length}
+      onNavigate={setActiveView}
+      onLogout={handleLogout}
+    >
       {globalError ? (
         <div className="alert danger">
           <AlertTriangle size={18} />

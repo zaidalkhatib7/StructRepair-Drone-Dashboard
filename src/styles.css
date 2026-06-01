@@ -856,6 +856,40 @@ textarea:focus {
   gap: 16px;
 }
 
+.cloud-login-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.cloud-auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: #eaf4f3;
+}
+
+.cloud-auth-row strong,
+.cloud-auth-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.cloud-auth-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 dl {
   display: grid;
   gap: 12px;
@@ -1559,6 +1593,7 @@ dd {
   .start-form,
   .upload-form,
   .stream-form,
+  .cloud-login-form,
   .exterior-grid,
   .exterior-form,
   .wifi-adb-grid,
@@ -1572,6 +1607,11 @@ dd {
 
   .record-row {
     grid-template-columns: 1fr;
+  }
+
+  .cloud-auth-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .row-actions {

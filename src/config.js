@@ -1,4 +1,22 @@
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://droneapi.test").replace(/\/$/, "");
+export const FIELD_BACKEND_ORIGIN = (
+  import.meta.env.VITE_FIELD_BACKEND_ORIGIN ||
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://droneapi.test"
+).replace(/\/$/, "");
+
+export const FIELD_API_BASE_URL = (
+  import.meta.env.VITE_FIELD_API_BASE_URL || `${FIELD_BACKEND_ORIGIN}/api/v1`
+).replace(/\/$/, "");
+
+export const CLOUD_BACKEND_ORIGIN = (
+  import.meta.env.VITE_CLOUD_BACKEND_ORIGIN || "http://207.180.254.216:8082"
+).replace(/\/$/, "");
+
+export const CLOUD_API_BASE_URL = (
+  import.meta.env.VITE_CLOUD_API_BASE_URL || `${CLOUD_BACKEND_ORIGIN}/api/v1`
+).replace(/\/$/, "");
+
+export const API_BASE_URL = FIELD_BACKEND_ORIGIN;
 
 export const REVERB = {
   host: import.meta.env.VITE_REVERB_HOST || "127.0.0.1",
@@ -12,6 +30,7 @@ export const REALTIME_HELPER_URL = (
 ).replace(/\/$/, "");
 
 export const TOKEN_STORAGE_KEY = "structrepair_field_dashboard_token";
+export const CLOUD_TOKEN_STORAGE_KEY = "structrepair_cloud_dashboard_token";
 
 export const SYRIAN_CITIES = [
   "Aleppo",

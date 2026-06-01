@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./config.js";
+import { API_BASE_URL, CLOUD_API_BASE_URL } from "./config.js";
 
 export class ApiError extends Error {
   constructor(message, options = {}) {
@@ -11,12 +11,12 @@ export class ApiError extends Error {
   }
 }
 
-function joinUrl(path) {
+function joinUrl(path, baseUrl = API_BASE_URL) {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
 
-  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function parseResponse(response) {
@@ -34,7 +34,7 @@ async function parseResponse(response) {
 }
 
 export async function apiRequest(path, options = {}) {
-  const { token, body, headers, ...rest } = options;
+  const { token, body, headers, baseUrl, ...rest } = options;
   const requestHeaders = new Headers(headers || {});
 
   if (!requestHeaders.has("Accept")) {
@@ -53,7 +53,7 @@ export async function apiRequest(path, options = {}) {
     requestBody = typeof body === "string" ? body : JSON.stringify(body);
   }
 
-  const response = await fetch(joinUrl(path), {
+  const response = await fetch(joinUrl(path, baseUrl), {
     ...rest,
     headers: requestHeaders,
     body: requestBody
@@ -87,8 +87,12 @@ export async function apiRequest(path, options = {}) {
   return payload;
 }
 
-export async function downloadRequest(path, token, accept = "application/pdf") {
-  const response = await fetch(joinUrl(path), {
+export function cloudApiRequest(path, options = {}) {
+  return apiRequest(path, { ...options, baseUrl: CLOUD_API_BASE_URL });
+}
+
+export async function downloadRequest(path, token, accept = "application/pdf", baseUrl) {
+  const response = await fetch(joinUrl(path, baseUrl), {
     headers: {
       Accept: accept,
       Authorization: `Bearer ${token}`
